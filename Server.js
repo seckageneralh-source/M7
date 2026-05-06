@@ -1,34 +1,37 @@
 require("dotenv").config();
 const express = require("express");
 const Stripe = require("stripe");
-const cors = require("cors");
+const crypto = require("crypto");
 
 const app = express();
-app.use(cors());
 app.use(express.json());
-
-/* =========================
-   STRIPE INITIALIZATION
-========================= */
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 /* =========================
-   TREASURY (INTERNAL LEDGER)
+   TREASURY LEDGER (CORE)
 ========================= */
 
 const treasury = {
   revenue: 0,
-  requests: 0,
-  transactions: [],
-  users: {}
+  users: {}, // apiKey -> user
+  transactions: []
 };
 
 /* =========================
-   M7 PRICING MODEL
+   CONSTANTS
 ========================= */
 
 const PRICE_PER_REQUEST = 0.99;
+const CREDITS_PER_PURCHASE = 1;
+
+/* =========================
+   API KEY GENERATOR
+========================= */
+
+function generateApiKey() {
+  return crypto.randomBytes(24).toString("hex");
+}
 
 /* =========================
    DASHBOARD (MATTE BLACK UI)
@@ -37,132 +40,121 @@ const PRICE_PER_REQUEST = 0.99;
 app.get("/", (req, res) => {
   res.send(`
   <html>
-  <head>
-    <title>M7 Dashboard</title>
-    <style>
-      body {
-        margin: 0;
-        font-family: Arial;
-        background: #0A0A0A;
-        color: white;
-      }
-      .panel {
-        background: #111111;
-        padding: 20px;
-        margin: 20px;
-        border: 1px solid #1A1A2E;
-        border-radius: 10px;
-      }
-      .blue { color: #0066FF; }
-      .green { color: #00FF88; }
-      button {
-        background: #0066FF;
-        color: white;
-        border: none;
-        padding: 12px 20px;
-        cursor: pointer;
-        border-radius: 8px;
-      }
-      button:hover { background: #00A3FF; }
-    </style>
-  </head>
+  <body style="margin:0;background:#0A0A0A;color:white;font-family:Arial">
 
-  <body>
-    <div class="panel">
-      <h1 class="blue">M7 TREASURY DASHBOARD</h1>
-      <p>Revenue: <span class="green">$${treasury.revenue.toFixed(2)}</span></p>
-      <p>Requests: ${treasury.requests}</p>
+    <div style="padding:20px;background:#111111;border:1px solid #1A1A2E;margin:20px;">
+      <h1 style="color:#0066FF">M7 PHASE 100 DASHBOARD</h1>
+      <p>Revenue: <span style="color:#00FF88">$${treasury.revenue.toFixed(2)}</span></p>
+      <p>Users: ${Object.keys(treasury.users).length}</p>
     </div>
 
-    <div class="panel">
-      <h2>Route Funds to Bank</h2>
+    <div style="padding:20px;background:#111111;border:1px solid #1A1A2E;margin:20px;">
+      <h2>Create API Key</h2>
+      <form action="/create-user" method="POST">
+        <button style="background:#0066FF;color:white;padding:10px;border:none">
+          Generate Key + Buy Access
+        </button>
+      </form>
+    </div>
+
+    <div style="padding:20px;background:#111111;border:1px solid #1A1A2E;margin:20px;">
+      <h2>Route Funds</h2>
       <form action="/route-funds" method="POST">
-        <button type="submit">Route via Stripe</button>
+        <button style="background:#00A3FF;color:white;padding:10px;border:none">
+          Send to Stripe Payout
+        </button>
       </form>
-      <p style="color:#8899AA;">Funds go through Stripe payout system to your bank account</p>
     </div>
 
-    <div class="panel">
-      <h2>Buy Access ($0.99 per request)</h2>
-      <form action="/checkout" method="POST">
-        <button type="submit">Activate M7 Access</button>
-      </form>
-    </div>
   </body>
   </html>
   `);
 });
 
 /* =========================
-   STRIPE CHECKOUT SESSION
+   CREATE USER + STRIPE CHECKOUT
 ========================= */
 
-app.post("/checkout", async (req, res) => {
-  try {
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card"],
-      mode: "payment",
-      line_items: [
-        {
-          price_data: {
-            currency: "usd",
-            product_data: {
-              name: "M7 Access Credit",
-            },
-            unit_amount: 99
-          },
-          quantity: 1
-        }
-      ],
-      success_url: `${process.env.BASE_URL}/success`,
-      cancel_url: `${process.env.BASE_URL}/cancel`
-    });
+app.post("/create-user", async (req, res) => {
+  const apiKey = generateApiKey();
 
-    res.redirect(303, session.url);
-  } catch (err) {
-    res.status(500).send(err.message);
-  }
+  treasury.users[apiKey] = {
+    credits: 0
+  };
+
+  const session = await stripe.checkout.sessions.create({
+    payment_method_types: ["card"],
+    mode: "payment",
+    line_items: [
+      {
+        price_data: {
+          currency: "usd",
+          product_data: {
+            name: "M7 API Credit (1 request)"
+          },
+          unit_amount: 99
+        },
+        quantity: 1
+      }
+    ],
+    success_url: `${process.env.BASE_URL}/success?key=${apiKey}`,
+    cancel_url: `${process.env.BASE_URL}/cancel`
+  });
+
+  res.redirect(session.url);
 });
 
 /* =========================
-   PAYMENT SUCCESS HANDLER
+   PAYMENT SUCCESS
 ========================= */
 
 app.get("/success", (req, res) => {
-  res.send("Payment successful. M7 access activated.");
+  const key = req.query.key;
+
+  if (!treasury.users[key]) {
+    return res.send("Invalid user");
+  }
+
+  treasury.users[key].credits += CREDITS_PER_PURCHASE;
+
+  res.send(`
+    <h2>Payment Successful</h2>
+    <p>Your API Key:</p>
+    <code>${key}</code>
+    <p>Credits added: ${CREDITS_PER_PURCHASE}</p>
+  `);
 });
 
 /* =========================
-   API REQUEST (M7 CORE)
+   M7 API (CORE ENGINE)
 ========================= */
 
 app.post("/api/m7", (req, res) => {
-  const userId = req.body.userId || "anonymous";
+  const apiKey = req.headers["x-api-key"];
 
-  if (!treasury.users[userId]) {
-    treasury.users[userId] = { credits: 0 };
+  if (!treasury.users[apiKey]) {
+    return res.status(403).json({ error: "Invalid API Key" });
   }
 
-  if (treasury.users[userId].credits <= 0) {
-    return res.status(402).json({
-      error: "No credits. Please buy access."
-    });
+  if (treasury.users[apiKey].credits <= 0) {
+    return res.status(402).json({ error: "No credits. Please purchase access." });
   }
 
-  treasury.users[userId].credits -= 1;
-  treasury.requests += 1;
+  // consume credit
+  treasury.users[apiKey].credits -= 1;
+
+  // ledger update
   treasury.revenue += PRICE_PER_REQUEST;
-
   treasury.transactions.push({
-    userId,
+    apiKey,
     amount: PRICE_PER_REQUEST,
-    timestamp: Date.now()
+    time: Date.now()
   });
 
   res.json({
     success: true,
-    message: "M7 response executed",
-    remainingCredits: treasury.users[userId].credits
+    message: "M7 executed",
+    remainingCredits: treasury.users[apiKey].credits
   });
 });
 
@@ -172,16 +164,14 @@ app.post("/api/m7", (req, res) => {
 
 app.post("/route-funds", async (req, res) => {
   try {
-    const balance = treasury.revenue;
-
     const payout = await stripe.payouts.create({
-      amount: Math.floor(balance * 100),
+      amount: Math.floor(treasury.revenue * 100),
       currency: "usd"
     });
 
     treasury.revenue = 0;
 
-    res.send("Funds routed successfully via Stripe.");
+    res.send("Funds routed via Stripe payout system.");
   } catch (err) {
     res.status(500).send(err.message);
   }
@@ -194,5 +184,5 @@ app.post("/route-funds", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`M7 running on port ${PORT}`);
+  console.log("M7 Phase 100 running on port", PORT);
 });
