@@ -1,5 +1,5 @@
 {
-  "name": "m7-infrastructure",
+  "name": "m7-phase-100",
   "version": "1.0.0",
   "main": "server.js",
   "type": "commonjs",
@@ -9,7 +9,6 @@
   "dependencies": {
     "express": "^4.19.2",
     "stripe": "^16.0.0",
-    "dotenv": "^16.4.5",
-    "cors": "^2.8.5"
+    "dotenv": "^16.4.5"
   }
 }
